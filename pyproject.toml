@@ -23,6 +23,7 @@ pydantic = "^2.11.4"
 asyncpg = "^0.30.0"
 aiohttp = "^3.12.2"
 fastapi = {extras = ["standard"], version = "^0.115.12"}
+aiosqlite = "^0.21.0"
 
 
 [build-system]

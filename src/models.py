@@ -1,14 +1,11 @@
 from datetime import datetime
 
 from sqlalchemy import Date, DateTime, Float, Integer, String
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
+from .database import Base
 
 
-class BaseModel(DeclarativeBase):
-    pass
-
-
-class SpimexTradingResult(BaseModel):
+class SpimexTradingResult(Base):
     __tablename__ = "spimex_trading_results"
 
     id: Mapped[int] = mapped_column(primary_key=True)
