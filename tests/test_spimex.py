@@ -34,9 +34,11 @@ def mock_file_system():
     ) as mock_exists, patch(
         "os.path.join", side_effect=lambda *args: "/".join(str(a) for a in args)
     ) as mock_join, patch(
-        "builtins.open", mock_open()
-    ) as m_open:
-        yield mock_makedirs, mock_exists, mock_join, m_open
+        "src.spimex_async.open", mock_open()
+    ) as m_open_async, patch(
+        "src.spimex_sync.open", mock_open()
+    ) as m_open_sync:
+        yield mock_makedirs, mock_exists, mock_join, m_open_async, m_open_sync
 
 
 @pytest.fixture
@@ -118,7 +120,7 @@ async def test_process_bulletins_async(
     mock_file_system, mock_db_session, mock_excel_data
 ):
     """Тест асинхронной обработки бюллетеней."""
-    mock_makedirs, mock_exists, mock_join, m_open = mock_file_system
+    mock_makedirs, mock_exists, mock_join, m_open_async, m_open_sync = mock_file_system
     mock_async_session, _ = mock_db_session
     bulletin_urls = [
         (
@@ -142,5 +144,6 @@ async def test_process_bulletins_async(
         output_dir = "temp_bulletins"
         await process_bulletins_async(start_date, end_date, output_dir)
         mock_makedirs.assert_called_once_with(output_dir, exist_ok=True)
-        assert m_open.call_count == 0
+        assert m_open_async.call_count == 0
+        assert m_open_sync.call_count == 0
         assert mock_async_session.execute.call_count >= 1
