@@ -108,6 +108,12 @@ def parse_bulletin(file_path: str, trade_date: date) -> List[dict]:
         data_df = data_df[~data_df["Код Инструмента"].str.contains("Итог", case=False, na=False)]
         logger.debug(f"После фильтрации 'Итог': {len(data_df)} строк")
 
+        # Извлекаем базовый код инструмента без суффиксов
+        data_df["Код Инструмента"] = data_df["Код Инструмента"].str.split("-").str[0]
+
+        # Переименовываем колонки в соответствии с моделью
+        data_df = data_df.rename(columns=required_columns)
+
         current_time = pd.to_datetime(datetime.now())
         data_df["date"] = trade_date
         data_df["created_on"] = current_time
@@ -126,79 +132,79 @@ def parse_bulletin(file_path: str, trade_date: date) -> List[dict]:
         return []
 
 
+def sync_get_max_pages(base_url: str, headers: dict) -> int:
+    try:
+        response = requests.get(base_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        pagination = soup.find("div", class_="bx-pagination-container")
+        if not pagination:
+            return 1
+        pages = pagination.find_all("li")
+        if not pages:
+            return 1
+        last_page = pages[-2].text.strip()
+        return int(last_page) if last_page.isdigit() else 1
+    except Exception as e:
+        logger.error(f"Ошибка при определении количества страниц: {e}")
+        return 1
+
+def sync_fetch_page(page_url: str, headers: dict, retries: int = 5, delay: float = 5.0) -> Optional[str]:
+    for attempt in range(retries):
+        try:
+            response = requests.get(page_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            time.sleep(0.5)
+            return response.text
+        except requests.RequestException as e:
+            logger.warning(f"Попытка {attempt + 1} не удалась для {page_url}: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+    logger.error(f"Не удалось загрузить страницу {page_url} после {retries} попыток")
+    return None
+
+def sync_get_bulletin_urls(start_date: date, end_date: date) -> List[Tuple[str, date]]:
+    base_url = "https://spimex.com/markets/oil_products/trades/results/"
+    bulletin_urls = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    }
+
+    max_pages = sync_get_max_pages(base_url, headers)
+    logger.info(f"Найдено {max_pages} страниц пагинации")
+
+    for page in range(1, max_pages + 1):
+        page_url = f"{base_url}?page=page-{page}" if page > 1 else base_url
+        logger.info(f"Обрабатывается страница {page}: {page_url}")
+
+        html = sync_fetch_page(page_url, headers)
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+        page_urls = parse_page_links(soup, start_date, end_date, base_url)
+        bulletin_urls.extend(page_urls)
+
+        if page_urls:
+            earliest_date = min(date for _, date in page_urls)
+            if earliest_date < date(2023, 1, 1):
+                logger.info("Достигнута страница с данными до 2023 года, завершаем сбор")
+                break
+
+        pagination = soup.find("div", class_="bx-pagination-container")
+        if pagination:
+            next_page = pagination.find("li", class_="bx-pag-next")
+            if not next_page or not next_page.find("a"):
+                logger.info("Достигнута последняя страница пагинации")
+                break
+
+    logger.info(f"Всего найдено {len(bulletin_urls)} подходящих бюллетеней")
+    return bulletin_urls
+
 def process_bulletins_sync(start_date: date, end_date: date, output_dir: str = "bulletins") -> None:
     """Обрабатывает бюллетени за указанный период синхронно."""
     start_time = time.time()
-
-    def sync_get_max_pages(base_url: str, headers: dict) -> int:
-        try:
-            response = requests.get(base_url, headers=headers, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            pagination = soup.find("div", class_="bx-pagination-container")
-            if not pagination:
-                return 1
-            pages = pagination.find_all("li")
-            if not pages:
-                return 1
-            last_page = pages[-2].text.strip()
-            return int(last_page) if last_page.isdigit() else 1
-        except Exception as e:
-            logger.error(f"Ошибка при определении количества страниц: {e}")
-            return 1
-
-    def sync_fetch_page(page_url: str, headers: dict, retries: int = 5, delay: float = 5.0) -> Optional[str]:
-        for attempt in range(retries):
-            try:
-                response = requests.get(page_url, headers=headers, timeout=10)
-                response.raise_for_status()
-                time.sleep(0.5)
-                return response.text
-            except requests.RequestException as e:
-                logger.warning(f"Попытка {attempt + 1} не удалась для {page_url}: {e}")
-                if attempt < retries - 1:
-                    time.sleep(delay)
-        logger.error(f"Не удалось загрузить страницу {page_url} после {retries} попыток")
-        return None
-
-    def sync_get_bulletin_urls(start_date: date, end_date: date) -> List[Tuple[str, date]]:
-        base_url = "https://spimex.com/markets/oil_products/trades/results/"
-        bulletin_urls = []
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        }
-
-        max_pages = sync_get_max_pages(base_url, headers)
-        logger.info(f"Найдено {max_pages} страниц пагинации")
-
-        for page in range(1, max_pages + 1):
-            page_url = f"{base_url}?page=page-{page}" if page > 1 else base_url
-            logger.info(f"Обрабатывается страница {page}: {page_url}")
-
-            html = sync_fetch_page(page_url, headers)
-            if not html:
-                continue
-
-            soup = BeautifulSoup(html, "html.parser")
-            page_urls = parse_page_links(soup, start_date, end_date, base_url)
-            bulletin_urls.extend(page_urls)
-
-            if page_urls:
-                earliest_date = min(date for _, date in page_urls)
-                if earliest_date < date(2023, 1, 1):
-                    logger.info("Достигнута страница с данными до 2023 года, завершаем сбор")
-                    break
-
-            pagination = soup.find("div", class_="bx-pagination-container")
-            if pagination:
-                next_page = pagination.find("li", class_="bx-pag-next")
-                if not next_page or not next_page.find("a"):
-                    logger.info("Достигнута последняя страница пагинации")
-                    break
-
-        logger.info(f"Всего найдено {len(bulletin_urls)} подходящих бюллетеней")
-        return bulletin_urls
 
     os.makedirs(output_dir, exist_ok=True)
     if end_date > date.today():

@@ -41,7 +41,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     global cache_reset_task
-    if cache_reset_task:    
+    if cache_reset_task:
         cache_reset_task.cancel()
         try:
             await cache_reset_task

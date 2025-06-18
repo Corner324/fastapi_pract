@@ -16,12 +16,16 @@ from trading_result_schema import TradingResultModel
 logger = logging.getLogger(__name__)
 
 
-def parse_page_links(soup: BeautifulSoup, start_date: date, end_date: date, base_url: str) -> List[Tuple[str, date]]:
+def parse_page_links(
+    soup: BeautifulSoup, start_date: date, end_date: date, base_url: str
+) -> List[Tuple[str, date]]:
     """Парсит ссылки на бюллетени с одной страницы."""
     start_time = time.time()
     bulletin_urls = []
     links = soup.find_all("a", class_="accordeon-inner__item-title link xls")
-    logger.info(f"Найдено {len(links)} ссылок на странице за {time.time() - start_time:.2f} секунд")
+    logger.info(
+        f"Найдено {len(links)} ссылок на странице за {time.time() - start_time:.2f} секунд"
+    )
 
     for link in links:
         href = link.get("href")
@@ -38,7 +42,9 @@ def parse_page_links(soup: BeautifulSoup, start_date: date, end_date: date, base
             file_date_str = href.split("oil_xls_")[1][:8]
             file_date = datetime.strptime(file_date_str, "%Y%m%d").date()
             if start_date <= file_date <= end_date:
-                full_url = href if href.startswith("http") else f"https://spimex.com{href}"
+                full_url = (
+                    href if href.startswith("http") else f"https://spimex.com{href}"
+                )
                 bulletin_urls.append((full_url, file_date))
                 logger.debug(f"Добавлена ссылка: {full_url}, дата: {file_date}")
             else:
@@ -88,8 +94,15 @@ def parse_bulletin(file_path: str, trade_date: date) -> List[dict]:
         data_rows = []
         for i in range(8, len(df)):
             row = df.iloc[i].tolist()
-            if pd.isna(row[1]) or row[1] == "" or row[1] == "Код Инструмента" or row[1].startswith("Код"):
-                logger.debug(f"Пропущена строка {i + 1}: содержит пустое значение или заголовок")
+            if (
+                pd.isna(row[1])
+                or row[1] == ""
+                or row[1] == "Код Инструмента"
+                or row[1].startswith("Код")
+            ):
+                logger.debug(
+                    f"Пропущена строка {i + 1}: содержит пустое значение или заголовок"
+                )
                 break
             data_rows.append(row[1:])
 
@@ -99,21 +112,57 @@ def parse_bulletin(file_path: str, trade_date: date) -> List[dict]:
 
         data_df = pd.DataFrame(data_rows, columns=headers_clean)
 
-        for col in ["Объем Договоров в единицах измерения", "Обьем Договоров, руб.", "Количество Договоров, шт."]:
+        for col in [
+            "Объем Договоров в единицах измерения",
+            "Обьем Договоров, руб.",
+            "Количество Договоров, шт.",
+        ]:
             data_df[col] = data_df[col].replace("-", pd.NA)
             data_df[col] = pd.to_numeric(data_df[col], errors="coerce").fillna(0)
 
         logger.debug(f"До фильтрации: {len(data_df)} строк")
         data_df = data_df[data_df["Количество Договоров, шт."] > 0]
-        logger.debug(f"После фильтрации 'Количество Договоров, шт.' > 0: {len(data_df)} строк")
-        data_df = data_df[list(required_columns.keys())]
-        data_df = data_df[~data_df["Код Инструмента"].str.contains("Итог", case=False, na=False)]
+        logger.debug(
+            f"После фильтрации 'Количество Договоров, шт.' > 0: {len(data_df)} строк"
+        )
+        data_df = data_df[
+            ~data_df["Код Инструмента"].str.contains("Итог", case=False, na=False)
+        ]
         logger.debug(f"После фильтрации 'Итог': {len(data_df)} строк")
+
+        # Переименовываем колонки в соответствии с моделью
+        data_df = data_df.rename(columns=required_columns)
 
         current_time = pd.to_datetime(datetime.now())
         data_df["date"] = trade_date
         data_df["created_on"] = current_time
         data_df["updated_on"] = current_time
+
+        # ГАРАНТИЯ: oil_id всегда строка и не null
+        if "oil_id" not in data_df.columns:
+            data_df["oil_id"] = "UNKNOWN"
+        data_df["oil_id"] = (
+            data_df["oil_id"].astype(str).replace(["nan", "None", "NaT", ""], "UNKNOWN")
+        )
+        data_df["oil_id"] = data_df["oil_id"].fillna("UNKNOWN")
+        assert not data_df["oil_id"].isnull().any(), "oil_id содержит NaN!"
+
+        # Извлекаем id, delivery_basis_id и delivery_type_id из exchange_product_id
+        data_df["id"] = range(1, len(data_df) + 1)
+        data_df["delivery_basis_id"] = data_df["exchange_product_id"].apply(
+            lambda x: (
+                x.split("-")[1]
+                if isinstance(x, str) and len(x.split("-")) > 1
+                else "UNKNOWN"
+            )
+        )
+        data_df["delivery_type_id"] = data_df["exchange_product_id"].apply(
+            lambda x: (
+                x.split("-")[2]
+                if isinstance(x, str) and len(x.split("-")) > 2
+                else "UNKNOWN"
+            )
+        )
 
         from pydantic import TypeAdapter
 
@@ -121,7 +170,9 @@ def parse_bulletin(file_path: str, trade_date: date) -> List[dict]:
         records = adapter.validate_python(data_df.to_dict(orient="records"))
 
         result = [record.dict(by_alias=False) for record in records]
-        logger.info(f"Спарсено {len(result)} записей из {file_path} за {time.time() - start_time:.2f} секунд")
+        logger.info(
+            f"Спарсено {len(result)} записей из {file_path} за {time.time() - start_time:.2f} секунд"
+        )
         return result
     except Exception as e:
         logger.error(f"Ошибка при парсинге {file_path}: {e}")
@@ -146,14 +197,18 @@ async def get_max_pages(base_url: str, headers: dict) -> int:
                     return 1
                 last_page = pages[-2].text.strip()
                 result = int(last_page) if last_page.isdigit() else 1
-                logger.info(f"Найдено {result} страниц пагинации за {time.time() - start_time:.2f} секунд")
+                logger.info(
+                    f"Найдено {result} страниц пагинации за {time.time() - start_time:.2f} секунд"
+                )
                 return result
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка при определении количества страниц: {e}")
             return 1
 
 
-async def fetch_page(page_url: str, headers: dict, retries: int = 3, delay: float = 2.0) -> Optional[str]:
+async def fetch_page(
+    page_url: str, headers: dict, retries: int = 3, delay: float = 2.0
+) -> Optional[str]:
     """Загружает страницу с ретраями и задержкой для предотвращения тротлинга."""
     start_time = time.time()
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -163,13 +218,17 @@ async def fetch_page(page_url: str, headers: dict, retries: int = 3, delay: floa
                     response.raise_for_status()
                     await asyncio.sleep(0.5)  # для предотвращения троттлинга
                     content = await response.text()
-                    logger.debug(f"Страница {page_url} загружена за {time.time() - start_time:.2f} секунд")
+                    logger.debug(
+                        f"Страница {page_url} загружена за {time.time() - start_time:.2f} секунд"
+                    )
                     return content
             except aiohttp.ClientError as e:
                 logger.warning(f"Попытка {attempt + 1} не удалась для {page_url}: {e}")
                 if attempt < retries - 1:
                     await asyncio.sleep(delay)
-        logger.error(f"Не удалось загрузить страницу {page_url} после {retries} попыток")
+        logger.error(
+            f"Не удалось загрузить страницу {page_url} после {retries} попыток"
+        )
         return None
 
 
@@ -206,7 +265,9 @@ async def get_bulletin_urls(start_date: date, end_date: date) -> List[Tuple[str,
         if page_urls:
             earliest_date = min(date for _, date in page_urls)
             if earliest_date < date(2023, 1, 1):
-                logger.info("Достигнута страница с данными до 2023 года, завершаем сбор")
+                logger.info(
+                    "Достигнута страница с данными до 2023 года, завершаем сбор"
+                )
                 break
 
         pagination = soup.find("div", class_="bx-pagination-container")
@@ -216,7 +277,9 @@ async def get_bulletin_urls(start_date: date, end_date: date) -> List[Tuple[str,
                 logger.info("Достигнута последняя страница пагинации")
                 break
 
-    logger.info(f"Всего найдено {len(bulletin_urls)} подходящих бюллетеней за {time.time() - start_time:.2f} секунд")
+    logger.info(
+        f"Всего найдено {len(bulletin_urls)} подходящих бюллетеней за {time.time() - start_time:.2f} секунд"
+    )
     return bulletin_urls
 
 
@@ -228,13 +291,17 @@ async def download_bulletin(url: str, output_path: str) -> bool:
             logger.info(f"Файл {output_path} уже существует, пропускаем загрузку")
             return True
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as session:
             async with session.get(url) as response:
                 response.raise_for_status()
                 content = await response.read()
                 with open(output_path, "wb") as f:
                     f.write(content)
-                logger.info(f"Бюллетень загружен: {output_path} за {time.time() - start_time:.2f} секунд")
+                logger.info(
+                    f"Бюллетень загружен: {output_path} за {time.time() - start_time:.2f} секунд"
+                )
                 return True
     except aiohttp.ClientError as e:
         logger.error(f"Ошибка при загрузке бюллетеня {url}: {e}")
@@ -251,13 +318,17 @@ async def save_batch(session, batch: List[dict]) -> None:
         raise
 
 
-async def process_bulletins_async(start_date: date, end_date: date, output_dir: str = "bulletins") -> None:
+async def process_bulletins_async(
+    start_date: date, end_date: date, output_dir: str = "bulletins"
+) -> None:
     """Обрабатывает бюллетени за указанный период асинхронно."""
     start_time = time.time()
     os.makedirs(output_dir, exist_ok=True)
 
     if end_date > date.today():
-        logger.warning(f"Конец диапазона дат ({end_date}) в будущем, устанавливаем текущую дату")
+        logger.warning(
+            f"Конец диапазона дат ({end_date}) в будущем, устанавливаем текущую дату"
+        )
         end_date = date.today()
 
     bulletin_urls = await get_bulletin_urls(start_date, end_date)
@@ -267,13 +338,17 @@ async def process_bulletins_async(start_date: date, end_date: date, output_dir: 
 
     async def download_with_semaphore(url, trade_date):
         async with semaphore:
-            output_path = os.path.join(output_dir, f"oil_xls_{trade_date.strftime('%Y%m%d')}.xls")
+            output_path = os.path.join(
+                output_dir, f"oil_xls_{trade_date.strftime('%Y%m%d')}.xls"
+            )
             if await download_bulletin(url, output_path):
                 records = parse_bulletin(output_path, trade_date)
                 return records
             return []
 
-    tasks = [download_with_semaphore(url, trade_date) for url, trade_date in bulletin_urls]
+    tasks = [
+        download_with_semaphore(url, trade_date) for url, trade_date in bulletin_urls
+    ]
     results = await asyncio.gather(*tasks)
     for records in results:
         all_records.extend(records)
@@ -283,7 +358,9 @@ async def process_bulletins_async(start_date: date, end_date: date, output_dir: 
         return
 
     batch_size = 1000
-    batches = [all_records[i : i + batch_size] for i in range(0, len(all_records), batch_size)]
+    batches = [
+        all_records[i : i + batch_size] for i in range(0, len(all_records), batch_size)
+    ]
 
     # Параллельное сохранение батчей
     async with async_sessionmaker(async_engine)() as session:
@@ -303,7 +380,9 @@ async def process_bulletins_async(start_date: date, end_date: date, output_dir: 
             logger.error(f"Ошибка при сохранении батчей: {e}")
             await session.rollback()
 
-    logger.info(f"Обработка завершена: сохранено {len(all_records)} записей за {time.time() - start_time:.2f} секунд")
+    logger.info(
+        f"Обработка завершена: сохранено {len(all_records)} записей за {time.time() - start_time:.2f} секунд"
+    )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from database import Base
 
 class SpimexTradingResult(Base):
     __tablename__ = "spimex_trading_results"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     exchange_product_id: Mapped[str] = mapped_column(String, nullable=False)
